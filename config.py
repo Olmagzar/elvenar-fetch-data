@@ -1,5 +1,6 @@
 userid = 'login'
 password = 'passwd'
+db_file = 'players.json'
 
 header = {
     'Accept': '',
