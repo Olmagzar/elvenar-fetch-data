@@ -5,6 +5,7 @@ from config import db_file
 import os
 import stat
 import json
+import time
 from hashlib import md5
 
 ghosts = [0 for i in range(19)]
@@ -27,7 +28,7 @@ def processResp(data, me, rqIds, players, player_list, tguilds):
         if 'technologySection' in player:
             tech = player['technologySection']
         else:
-            player_id = rqIds[data['requestId']]
+            player_id = str(rqIds[data['requestId']])
             player_name = getName(players, player_id)
             fd = os.open('errors.txt', os.O_CREAT|os.O_APPEND|os.O_WRONLY)
             os.chmod(fd, stat.S_IRUSR|stat.S_IWUSR|stat.S_IRGRP|stat.S_IROTH)
@@ -36,25 +37,55 @@ def processResp(data, me, rqIds, players, player_list, tguilds):
             os.close(fd)
             tech = 0
 
-        city_hash = md5(json.dumps(player['city_map']['entities']).encode()).hexdigest()
+        city = player['city_map']['entities']
+        city_hash = md5(json.dumps(city).encode()).hexdigest()
+        # Coeur de la montagne : B_Dwarfs_AW2_X -> goods bonus
+        # Centre d'échange     : B_Gr6_AW2_X    -> manuf spell pickup bonus
+        # Voyage temporel      : B_Gr9_AW1_X    -> sensible goods bonus
+        # Vortex de stockage   : B_Gr10_AW1_X   -> sensible goods bonus
+        # Arbre d'illumination : B_****_AW?_X   -> ascendant goods bonus
+        buildings = { b['id']: (b['cityentity_id'], b['level'], 'connected' in b) for b in city \
+                        if b['type'] == 'goods' \
+                        or 'B_Dwarfs_AW2_' in b['cityentity_id'] \
+                        or 'B_Gr6_AW2_' in b['cityentity_id'] \
+                        or 'B_Gr9_AW1_' in b['cityentity_id'] \
+                        or 'B_Gr10_AW1_' in b['cityentity_id'] }
+
+        # Effects:
+        # - 'good_production_boost_spell'    (manuf enchantée, ownerId, remainingTime)
+        # - 'manufactories_production_boost' (phénix doré, remainingTime)
+        # - 'increase_spell_power_boost'     (phénix des tempêtes, remainingTime)
+        effects = {}
+        if 'effects' in player:
+            for e in player['effects']:
+                if e['actionId'] in ('good_production_boost_spell', \
+                                     'manufactories_production_boost', \
+                                     'increase_spell_power_boost') \
+                   and 'remainingTime' in e:
+                    effects[e['ownerId']] = (e['actionId'], e['remainingTime'])
 
         player = player['other_player']
-        player_id = player['player_id']
+        player_id = str(player['player_id'])
         if not 'r' in player['location']:
             player['location']['r'] = 0
         if not 'q' in player['location']:
             player['location']['q'] = 0
         if player['location']['r'] == me['r'] \
            and player['location']['q'] == me['q'] \
-           and player_id != me['player_id']:
+           and player_id != str(me['player_id']):
             player_list[player_id]['ghost'] = True
+            player_list[player_id]['active_period'] = 0
+            player_list[player_id]['active'] = False
             ghosts[tech] += 1
         else:
             player_list[player_id]['ghost'] = False
 
-        if 'city_hash' in player_list[player_id] and \
-           player_list[player_id]['city_hash'] != city_hash:
+        if ('city_hash' in player_list[player_id] and \
+            player_list[player_id]['city_hash'] != city_hash) \
+           or effects != {}:
             player_list[player_id]['active'] = True
+            if player_list[player_id]['ghost'] == True:
+                print('mark ghost active', effects != {})
 
         player_list[player_id]['name'] = player['name']
         player_list[player_id]['x'] = player['location']['r']
@@ -62,6 +93,8 @@ def processResp(data, me, rqIds, players, player_list, tguilds):
         player_list[player_id]['encounter'] = 0
         player_list[player_id]['tech'] = tech
         player_list[player_id]['city_hash'] = city_hash
+        player_list[player_id]['buildings'] = buildings
+        player_list[player_id]['effects'] = effects
 
         if 'guild_info' in player:
             player_list[player_id]['guild_id'] = player['guild_info']['id']
@@ -69,14 +102,19 @@ def processResp(data, me, rqIds, players, player_list, tguilds):
             if player['guild_info']['id'] in tguilds:
                 player_list[player_id]['active_guild'] = True
         else:
+            if 'guild_id' in player_list[player_id]:
+                trash = player_list[player_id].pop('guild_id')
+                trash = player_list[player_id].pop('guild_name')
             trash = player_list[player_id].pop('active_guild')
     elif data['requestClass'] == 'RankingService' and \
          data['requestMethod'] == 'getRankingOverview':
-        player_id = rqIds[data['requestId']]
+        player_id = str(rqIds[data['requestId']])
         score_hash = md5(json.dumps(data['responseData']).encode()).hexdigest()
         if 'score_hash' in player_list[player_id] and \
            player_list[player_id]['score_hash'] != score_hash:
             player_list[player_id]['active'] = True
+            if player_list[player_id]['ghost'] == True:
+                print('(2) mark ghost active')
         player_list[player_id]['score_hash'] = score_hash
         for elt in data['responseData']:
             if elt['category'] != 'encounters':
@@ -106,22 +144,25 @@ def main():
         rq = createRequest(reqId, 'fetchInitialWorldMapData', 'WorldMapService', [])
         payload = forgeRequest(cred['json_id'], rq)
         data = request(cred['json_gateway'], payload, cred['sid'])
-        data = json.loads(data.decode())[0]
-        if data['requestClass'] == 'ExceptionService':
-            print("fetchInitialWorldMapData failed, aborting")
-            pprint(data)
-            print("[....] Logout")
-            rc = logout(cred)
-            if rc != 0:
-                print(f"\n\n{UP}[{BAD}FAIL{RES}]")
-            else:
+        #data = json.loads(data.decode())[0]
+        for data in json.loads(data.decode()):
+            if data['requestClass'] == 'ExceptionService':
+                print("fetchInitialWorldMapData failed, aborting")
+                pprint(data)
+                print("[....] Logout")
+                rc = logout(cred)
+                if rc != 0:
+                    print(f"\n\n{UP}[{BAD}FAIL{RES}]")
+                else:
+                    print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
+                return 1
+            elif data['requestClass'] == 'WorldMapService' and \
+                 data['requestMethod'] == 'fetchInitialWorldMapData':
+                provinces = data['responseData']['player_world_map_area_vo']['provinces']
+                me = [ p for p in provinces
+                            if (p['__class__'] == 'PlayerProvinceVO' and str(p['player_id']) == cred['player_id'])
+                     ][0]
                 print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
-            return 1
-        provinces = data['responseData']['player_world_map_area_vo']['provinces']
-        me = [ p for p in provinces
-                    if (p['__class__'] == 'PlayerProvinceVO' and str(p['player_id']) == cred['player_id'])
-             ][0]
-        print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
 
         # Get player list
         print("[....] Get list of players")
@@ -157,22 +198,28 @@ def main():
 
         print('[....] Initialize memory')
         id_list = []
+        mark_act = 0
+        mark_inact = 0
+        mark_new = 0
         for p in players:
             if not 'points' in p:
                 p['points'] = 0
-            player_id = p['player']['player_id']
+            player_id = str(p['player']['player_id'])
             id_list += [player_id]
             if player_id in player_list:
                 if player_list[player_id]['points'] != p['points']:
                     player_list[player_id]['active'] = True
                     player_list[player_id]['active_guild'] = True
+                    mark_act += 1
                 else:
                     player_list[player_id]['active'] = False
                     player_list[player_id]['active_guild'] = False
+                    mark_inact += 1
             else:
-                player_list[player_id] = { 'active': True, 'active_guild': True}
+                player_list[player_id] = { 'active': True, 'active_guild': True, 'tournament': 0 }
+                mark_new += 1
             player_list[player_id]['points'] = p['points']
-        print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
+        print(f"\n\n{UP}[ {GOOD}OK{RES} ] Initialize memory (" + str(mark_act) + ", " + str(mark_inact) + ", " + str(mark_new) + ")")
 
         print("[....] Mark tournament players active")
         reqId += 1
@@ -181,20 +228,26 @@ def main():
         data = request(cred['json_gateway'], payload, cred['sid'])
         data = json.loads(data.decode())[0]
         tguilds = []
-        badGuys = []
+        mark_t = 0
         if data['requestClass'] == 'ExceptionService':
             print(f"\n\n{UP}[{BAD}FAIL{RES}]")
             pprint(data)
         else:
             tplayers = data['responseData']['rankings']
             for p in tplayers:
-                player_id = p['player']['player_id']
-                player_list[player_id]['active'] = True
+                player_id = str(p['player']['player_id'])
+                if player_list[player_id]['tournament'] != p['points']:
+                    player_list[player_id]['active'] = True
                 player_list[player_id]['active_guild'] = True
+                player_list[player_id]['tournament'] = p['points']
+                mark_t += 1
                 if 'guildInfo' in p:
                     tguilds += [p['guildInfo']['id']]
+            print(f"\n\n{UP}[ {GOOD}OK{RES} ] Mark tournament players active (" + str(mark_t) + ")")
 
-            print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
+        if time.gmtime().tm_wday == 0:
+            for player_id in player_list:
+                player_list[player_id]['tournament'] = 0
 
         print('[....] Download players')
         print('0/' + str(len(players)))
@@ -274,8 +327,27 @@ def main():
             print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
             os.remove(db_file)
 
+        print("[....] Update active period")
+        for player_id in player_list:
+            active = player_list[player_id].pop('active')
+            if active == True:
+                player_list[player_id]['active_period'] = 35
+            else:
+                period = player_list[player_id]['active_period']
+                player_list[player_id]['active_period'] = max(period - 1, 0)
+        print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
+
         print("[....] Write database")
         fd = os.open(db_file, os.O_CREAT|os.O_WRONLY)
+        os.chmod(fd, stat.S_IRUSR|stat.S_IWUSR|stat.S_IRGRP|stat.S_IROTH)
+        buf = json.dumps(player_list).encode()
+        os.write(fd, buf)
+        os.close(fd)
+        ts = time.gmtime()
+        ts = "{}{:02}{:02}_{:02}{:02}".format(ts.tm_year, ts.tm_mon, ts.tm_mday,
+                                              ts.tm_hour, ts.tm_min)
+        db_file2 = db_file[:-len('.json')] + '-' + ts + '.json'
+        fd = os.open(db_file2, os.O_CREAT|os.O_WRONLY)
         os.chmod(fd, stat.S_IRUSR|stat.S_IWUSR|stat.S_IRGRP|stat.S_IROTH)
         buf = json.dumps(player_list).encode()
         os.write(fd, buf)

@@ -1,6 +1,6 @@
 userid = 'login'
 password = 'passwd'
-db_file = 'players.json'
+db_file = '/mnt/elvenar-db/src/players.json'
 
 header = {
     'Accept': '',
