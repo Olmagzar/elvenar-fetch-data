@@ -1,14 +1,13 @@
 from pprint import pprint
-from connection import login, logout
-from elv_requests import createRequest, forgeRequest, request
-from config import db_file
+from connection import ElvenarConnection
 import os
 import stat
 import json
 import time
 from hashlib import md5
 
-ghosts = [0 for i in range(19)]
+db_file = '/mnt/elvenar-db/src/players.json'
+ghosts = [0 for i in range(20)]
 
 def getName(players, player_id):
     return [ p['player']['player_name'] for p in players \
@@ -127,60 +126,62 @@ def processResp(data, me, rqIds, players, player_list, tguilds):
         os.write(fd, b'\n')
         os.close(fd)
 
+def createRequest(requestId, requestMethod, requestClass, requestData):
+    req = [ {
+        'requestId': requestId,
+        'requestMethod': requestMethod,
+        'requestClass': requestClass,
+        'requestData': requestData,
+        '__clazz__': 'ServerRequestVO'
+    } ]
+    return req
 
+# TODO: Refactor main code splitting section into functions
 def main():
-    print("[....] Login")
-    cred = login()
     UP = "\x1b[3A"
     CLR = "\x1b[0K"
     GOOD = "\033[38;5;34m"
     BAD = "\033[38;5;1m"
     RES = "\033[0m"
-    if cred != None:
+    print("[....] Login")
+    # TODO: give username and pass as argument taken from either command-line or interactively
+    #       (same for world and country)
+    game = ElvenarConnection('login', 'passwd', 'fr', 'Felyndral')
+    try:
+        game.login()
         print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
-
         print("[....] Get cartographer details")
         reqId = 1
         rq = createRequest(reqId, 'fetchInitialWorldMapData', 'WorldMapService', [])
-        payload = forgeRequest(cred['json_id'], rq)
-        data = request(cred['json_gateway'], payload, cred['sid'])
-        #data = json.loads(data.decode())[0]
+        data = game.request(rq)
         for data in json.loads(data.decode()):
             if data['requestClass'] == 'ExceptionService':
                 print("fetchInitialWorldMapData failed, aborting")
                 pprint(data)
                 print("[....] Logout")
-                rc = logout(cred)
-                if rc != 0:
-                    print(f"\n\n{UP}[{BAD}FAIL{RES}]")
-                else:
-                    print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
-                return 1
+                game.logout()
+                print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
             elif data['requestClass'] == 'WorldMapService' and \
                  data['requestMethod'] == 'fetchInitialWorldMapData':
                 provinces = data['responseData']['player_world_map_area_vo']['provinces']
                 me = [ p for p in provinces
-                            if (p['__class__'] == 'PlayerProvinceVO' and str(p['player_id']) == cred['player_id'])
+                            if (p['__class__'] == 'PlayerProvinceVO' and str(p['player_id']) == game.player_id)
                      ][0]
                 print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
+        # TODO: handle empty result from loop for
 
         # Get player list
         print("[....] Get list of players")
         reqId += 1
         rq = createRequest(reqId, 'accessRanking', 'RankingService', ['player',999999,0])
-        payload = forgeRequest(cred['json_id'], rq)
-        data = request(cred['json_gateway'], payload, cred['sid'])
+        data = game.request(rq)
         data = json.loads(data.decode())[0]
         if data['requestClass'] == 'ExceptionService':
             print(f"\n\n{UP}[{BAD}FAIL{RES}]")
             pprint(data)
             print("[....] Logout")
-            rc = logout(cred)
-            if rc != 0:
-                print(f"\n\n{UP}[{BAD}FAIL{RES}]")
-            else:
-                print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
-            return 1
+            game.logout()
+            print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
 
         players = data['responseData']['rankings']
         print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
@@ -224,8 +225,7 @@ def main():
         print("[....] Mark tournament players active")
         reqId += 1
         rq = createRequest(reqId, 'accessRanking', 'RankingService', ['tournament',999999,0])
-        payload = forgeRequest(cred['json_id'], rq)
-        data = request(cred['json_gateway'], payload, cred['sid'])
+        data = game.request(rq)
         data = json.loads(data.decode())[0]
         tguilds = []
         mark_t = 0
@@ -270,8 +270,7 @@ def main():
             rqIds[reqId] = player_id
             request_list += rq
             if len(request_list) >= 50 or i == len(id_list):
-                payload = forgeRequest(cred['json_id'], request_list)
-                data = request(cred['json_gateway'], payload, cred['sid'])
+                data = game.request(rq)
                 data = json.loads(data.decode())
 
                 for idx in range(len(data)):
@@ -287,8 +286,7 @@ def main():
         print("[....] Mark spire guilds active")
         reqId += 1
         rq = createRequest(reqId, 'accessRanking', 'RankingService', ['previous_spire',999999,0])
-        payload = forgeRequest(cred['json_id'], rq)
-        data = request(cred['json_gateway'], payload, cred['sid'])
+        data = game.request(rq)
         data = json.loads(data.decode())[0]['responseData']
         if data['__class__'] == 'GameExceptionVO':
             print(f"\n\n{UP}[{BAD}FAIL{RES}]")
@@ -304,8 +302,7 @@ def main():
         print("[....] Mark event guilds active")
         reqId += 1
         rq = createRequest(reqId, 'accessRanking', 'RankingService', ['guild_event',999999,0])
-        payload = forgeRequest(cred['json_id'], rq)
-        data = request(cred['json_gateway'], payload, cred['sid'])
+        data = game.request(rq)
         data = json.loads(data.decode())[0]['responseData']
         if data['__class__'] == 'GameExceptionVO':
             print(f"\n\n{UP}[{BAD}FAIL{RES}]")
@@ -356,13 +353,12 @@ def main():
         print('Found', sum(ghosts), 'ghost cities.')
         pprint(ghosts)
         print("[....] Logout")
-        rc = logout(cred)
-        if rc != 0:
-            print(f"\n\n{UP}[{BAD}FAIL{RES}]")
-        else:
-            print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
-    else:
+        game.logout()
+        print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
+    except Exception as e:
         print(f"\n\n{UP}[{BAD}FAIL{RES}]")
+        print(e)
+        return 1
 
 if __name__ == '__main__':
     main()

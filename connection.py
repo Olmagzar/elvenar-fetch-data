@@ -1,300 +1,301 @@
-from config import userid, password, header, url, accept, host
 from pprint import pprint
+import json
 import time
 import math
 import random
 import base64
 import requests
+from hashlib import md5
 
-login_check_param = 'login%5Buserid%5D=' + userid + '&' + \
-                    'login%5Bpassword%5D=' + password + '&' + \
-                    'login%5Bremember_me%5D=false'
+class ElvenarConnection():
+    __worlds = [
+        'Arendyll',
+        'Winyandor',
+        'Felyndral',
+        'Khelonaar',
+        'Elcysandir',
+        'Sinya Arda',
+        'Ceravyn',
+        'Harandar'
+    ]
+    def __init__(self, login, passwd, country, world):
+        if country == 'beta':
+            country = 'zz'
+        if world in self.__worlds:
+            self.__world_id = '{}{}'.format(country, self.__worlds.index(world) + 1)
+        else:
+            raise Exception("World {} not found in the list".format(world))
 
-def createTid():
-    return str(math.trunc(time.time() * 1000)) + '-' + \
-           str(math.trunc((99999 - 10000) * random.random() + 10000))
+        self.__login_check_params = 'login%5Buserid%5D={}&'.format(login) + \
+                                    'login%5Bpassword%5D={}&'.format(passwd) + \
+                                    'login%5Bremember_me%5D=false'
+        self.__home_page = 'https://{}.elvenar.com/'.format(country)
+        self.__login_page = '{}glps/login_check'.format(self.__home_page)
+        self.__world_selection_page = 'https://{}0.elvenar.com/web/glps'.format(country)
+        self.__ask_world_page = 'https://{}0.elvenar.com/web/login/play'.format(country)
+        self.__selected_world_page = 'https://{}.elvenar.com/game'.format(self.__world_id)
+        self.__world_logout_page = '{}/logout'.format(self.__selected_world_page)
+        self.__world_selection_logout_page = 'https://{}0.elvenar.com/web/web/login/logout'.format(country)
+        self.__home_logout_page = '{}glps/logout'.format(self.__home_page)
 
+        self.__player_id = ''
+        self.__headers = {
+            'Accept': '',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Language': 'en-US,en,q=0.5',
+            'Connection': 'keep-alive',
+            'Host': '',
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:68.0) Gecko/20100101 Goanna/4.8 Firefox 68.0 PaleMoon/29.4.1'
+        }
 
-# GET https://fr.elvenar.com/ -> fetch PHPSESSID & XSRF-TOKEN
-def getTokens():
-    h = header.copy()
-    h['Accept'] = accept[0]
-    h['Host'] = host[0]
-    r = requests.get(url[0], headers = h)
-    if r.status_code != requests.codes.ok:
-        print(r.status_code, r.reason)
-        print('GET', url[0])
-        pprint(h)
-        pprint(r.headers)
-        return (None, None)
-    return (r.cookies['PHPSESSID'], r.cookies['XSRF-TOKEN'])
+    def __getPlayerID(self):
+        return self.__player_id
+    player_id = property(__getPlayerID)
 
+    def __emitGET(self, url, cookie = None, referer = None):
+        h = self.__headers.copy()
+        h['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        h['Host'] =  url.split('/')[2]
+        if cookie != None:
+            h['Cookie'] = cookie
+        if referer != None:
+            h['Referer'] = referer
 
-# POST https://fr.elvenar.com/glps/login_check with login_check_param,
-# -> fetch new PHPSESSID (and player ID ?)
-def getNewPHP(phpsessid, xsrf):
-    my_tid = createTid()
-    h = header.copy()
-    h['Accept'] = accept[1]
-    h['Content-Length'] = str(len(login_check_param))
-    h['Content-Type'] = 'application/x-www-form-urlencoded;charset=UTF-8'
-    h['Cookie'] = 'PHPSESSID=' + phpsessid + ';' + \
-                  'XSRF-TOKEN=' + xsrf + ';' + \
-                  'device_view=full;' + \
-                  'portal_tid=' + my_tid + ';' + \
-                  'portal_data=portal_tid=' + my_tid
-    h['Host'] = host[0]
-    h['Referer'] = 'https://fr.elvenar.com/'
-    h['X-Requested-With'] = 'XMLHttpRequest'
-    h['X-XSRF-TOKEN'] = xsrf
+        r = requests.get(url, headers = h, allow_redirects = False)
+        if r.status_code != requests.codes.ok and \
+           r.status_code != requests.codes.found:
+            print(r.status_code, r.reason)
+            print('GET', url)
+            pprint(h)
+            pprint(r.headers)
+            return None
+        return r
 
-    r = requests.post(url[1], headers = h, data = login_check_param)
-    if r.status_code != requests.codes.ok:
-        print(r.status_code, r.reason)
-        print('POST', url[1])
-        pprint(h)
-        pprint(r.headers)
-        return (None, my_tid)
-    if r.json()['success'] != True:
-        pprint(r.json())
-#        pprint(r.json()['errors'])
-        return (None, my_tid, None)
+    # GET https://fr.elvenar.com/ -> fetch PHPSESSID & XSRF-TOKEN
+    def __getTokens(self):
+        r = self.__emitGET(self.__home_page)
+        if r == None:
+            raise Exception("Could not retrieve initial tokens")
+        else:
+            self.__phpsessid = r.cookies['PHPSESSID']
+            self.__xsrf = r.cookies['XSRF-TOKEN']
 
-    return (r.cookies['PHPSESSID'], my_tid, str(r.json()['player_id']))
+    def __getSid(self):
+        cookie = 'ig_conv_last_site={}'.format(self.__world_selection_page)
+        r = self.__emitGET(self.__world_url, cookie, self.__world_selection_page)
+        if r == None:
+            raise Exception("Could not retrieve session ID")
+        else:
+            self.__sid = r.cookies['sid']
 
-def getRedirLogin(phpsessid, xsrf, tid):
-    h = header.copy()
-    h['Accept'] = accept[0]
-    h['Cookie'] = 'PHPSESSID=' + phpsessid + ';' + \
-                  'XSRF-TOKEN=' + xsrf + ';' + \
-                  'device_view=full;' + \
-                  'portal_tid=' + tid + ';' + \
-                  'portal_data=portal_tid=' + tid
-    h['Host'] = host[0]
-    h['Referer'] = 'https://fr.elvenar.com/'
-    r = requests.get(url[0], headers = h, allow_redirects = False)
-    if r.status_code != requests.codes.found:
-        print(r.status_code, r.reason)
-        print('GET', url[0])
-        pprint(h)
-        pprint(r.headers)
-        return None
-    new_url = r.headers['location']
-    h = header.copy()
-    h['Accept'] = accept[0]
-    h['Host'] = host[1]
-    h['Referer'] = 'https://fr.elvenar.com/'
-    r = requests.get(new_url, headers = h, allow_redirects = False)
-    if r.status_code != requests.codes.found:
-        print(r.status_code, r.reason)
-        print('GET', new_url)
-        pprint(h)
-        pprint(r.headers)
-        return None
-    my_mid = r.cookies['_mid']
-    h['Cookie'] = '_mid=' + my_mid
-    r = requests.get(url[2], headers = h)
-    if r.status_code != requests.codes.ok:
-        print(r.status_code, r.reason)
-        print('GET', url[2])
-        pprint(h)
-        pprint(r.headers)
-    return my_mid
+    def __getJsonGateway(self):
+        cookie = 'ig_conv_last_site={};'.format(self.__world_selection_page) + \
+                 'sid={};'.format(self.__sid) + \
+                 'req_page_info=game_v1;' + \
+                 'start_page_type=game;' + \
+                 'start_page_version=v1'
+        r = self.__emitGET(self.__selected_world_page, cookie, self.__world_selection_page)
+        if r == None:
+            raise Exception("Could not retrieve selected world page")
+        else:
+            buf = r.text
+            pos = buf.rfind('json_gateway_url')
+            if pos == -1:
+                raise Exception("Could not retrieve 'json_gateway_url'")
+            else:
+                encoded_gateway = buf[pos - 1:].split()[1][1:-2]
+                self.__json_gateway = 'https:' + base64.b64decode(encoded_gateway).decode()
+                self.__json_id = self.__json_gateway[36:]
 
-def getWorldRedir(mid):
-    params = 'world_id=fr3'
-    my_tid = createTid()
-    h = header.copy()
-    h['Accept'] = accept[2]
-    h['Content-Length'] = str(len(params))
-    h['Content-Type'] = 'application/x-www-form-urlencoded;charset=UTF-8'
-    h['Cookie'] = '_mid=' + mid + ';' + \
-                  'ig_conv_last_site=' + url[2] + ';' + \
-                  'portal_tid' + my_tid + ';' + \
-                  'portal_ref_url=' + url[0] + ';' + \
-                  'portal_ref_session=0;' + \
-                  'portal_data=portal_tid=' + my_tid + \
-                             '&portal_ref_url=' + url[0] + \
-                             '&portal_ref_session=0'
-    h['Host'] = host[1]
-    h['Referer'] = url[2]
-    h['X-Requested-With'] = 'XMLHttpRequest'
-    r = requests.post(url[3], headers = h, data = params)
-    if r.status_code != requests.codes.ok:
-        print(r.status_code, r.reason)
-        print('GET', url[2])
-        pprint(h)
-        pprint(r.headers)
-        return (None, my_tid)
-    return (r.json()['redirect'], my_tid, r.cookies['cid'])
+    def __getRedirLogin(self):
+        cookie = 'PHPSESSID={};'.format(self.__phpsessid2) + \
+                 'XSRF-TOKEN={};'.format(self.__xsrf) + \
+                 'device_view=full;' + \
+                 'portal_tid={};'.format(self.__tid) + \
+                 'portal_data=portal_tid={}'.format(self.__tid)
+        r = self.__emitGET(self.__home_page, cookie, self.__home_page)
+        if r == None:
+            raise Exception("Could not get logged in page")
+            return
+        url = r.headers['location']
+        r = self.__emitGET(url, referer = self.__home_page)
+        if r == None:
+            raise Exception("Could note get credential page")
+            return
+        self.__mid = r.cookies['_mid']
+        cookie = '_mid={}'.format(self.__mid)
+        r = self.__emitGET(self.__world_selection_page, cookie, self.__home_page)
+        if r == None:
+            raise Exception("Could not get world selection page")
 
-def getSid(world_url):
-    h = header.copy()
-    h['Accept'] = accept[0]
-    h['Cookie'] = 'ig_conv_last_site=' + url[2]
-    h['Host'] = host[2]
-    h['Referer'] = url[2]
-    r = requests.get(world_url, headers = h, allow_redirects = False)
-    if r.status_code != requests.codes.found:
-        print(r.status_code, r.reason)
-        print('GET', world_url)
-        pprint(h)
-        pprint(r.headers)
-        return None
-    return r.cookies['sid']
+    def __emitPOST(self, accept, url, cookie, params, referer, token = None):
+        h = self.__headers.copy()
+        h['Accept'] = accept
+        h['Content-Length'] = str(len(params))
+        h['Content-Type'] = 'application/x-www-form-urlencoded;charset=UTF-8'
+        h['Cookie'] = cookie
+        h['Host'] = url.split('/')[2]
+        h['Referer'] = referer
+        h['X-Requested-With'] = 'XMLHttpRequest'
+        if token != None:
+            h['X-XSRF-TOKEN'] = token
+        r = requests.post(url, headers = h, data = params)
+        if r.status_code != requests.codes.ok:
+            print(r.status_code, r.reason)
+            print('POST', url)
+            pprint(h)
+            pprint(r.headers)
+            return None
+        return r
 
-def getJsonGateway(sid):
-    h = header.copy()
-    h['Accept'] = accept[0]
-    h['Cookie'] = 'ig_conv_last_site=' + url[2] + ';' + \
-                  'sid=' + sid + ';' + \
-                  'req_page_info=game_v1;' + \
-                  'start_page_type=game;' + \
-                  'start_page_version=v1'
-    h['Host'] = host[2]
-    h['Referer'] = url[2]
-    r = requests.get(url[4], headers = h)
-    if r.status_code != requests.codes.ok:
-        print(r.status_code, r.reason)
-        print('GET', url[4])
-        pprint(h)
-        pprint(r.headers)
-        return None
-    buf = r.text
-    pos = buf.rfind('json_gateway_url')
-    encoded_gateway = buf[pos - 1:].split()[1][1:-2]
-    return 'https:' + base64.b64decode(encoded_gateway).decode()
+    @staticmethod
+    def __createTid():
+        return str(math.trunc(time.time() * 1000)) + '-' + \
+               str(math.trunc((99999 - 10000) * random.random() + 10000))
 
-def login():
-    (phpsessid, xsrf) = getTokens()
-    if phpsessid == None or xsrf == None:
-        print("Error: getTokens")
-        return None
+    # POST https://fr.elvenar.com/glps/login_check with login_check_param,
+    # -> fetch new PHPSESSID and player ID
+    def __getNewPHP(self):
+        accept = 'application/json,text/plain,*/*'
+        self.__tid = self.__createTid()
+        cookie = 'PHPSESSID={};'.format(self.__phpsessid) + \
+                 'XSRF-TOKEN={};'.format(self.__xsrf) + \
+                 'device_view=full;' + \
+                 'portal_tid={};'.format(self.__tid) + \
+                 'portal_data=portal_tid={}'.format(self.__tid)
+        r = self.__emitPOST(accept, self.__login_page, cookie,
+                            self.__login_check_params,
+                            self.__home_page, self.__xsrf)
+        if r == None:
+            raise Exception("Could not post login credentials")
+        elif r.json()['success'] != True:
+            pprint(r.json())
+            raise Exception("Could not login")
+        else:
+            self.__phpsessid2 = r.cookies['PHPSESSID']
+            self.__player_id = str(r.json()['player_id'])
 
-    (new_phpsessid, tid, player_id) = getNewPHP(phpsessid, xsrf)
-    if new_phpsessid == None or tid == None or player_id == None:
-        print("Error: getNewPHP")
-        return None
+    def __getWorldRedir(self):
+        accept = 'application/json,text/javascript,*/*;q=0.01'
+        params = 'world_id={}'.format(self.__world_id)
+        self.__tid2 = self.__createTid()
+        cookie = '_mid={};'.format(self.__mid) + \
+                 'ig_conv_last_site={};'.format(self.__world_selection_page) + \
+                 'portal_tid={};'.format(self.__tid2) + \
+                 'portal_ref_url={};'.format(self.__home_page) + \
+                 'portal_ref_session=0;' + \
+                 'portal_data=portal_tid={}'.format(self.__tid2) + \
+                            '&portal_ref_url={}'.format(self.__home_page) + \
+                            '&portal_ref_session=0'
+        r = self.__emitPOST(accept, self.__ask_world_page, cookie, params,
+                            self.__world_selection_page)
+        if r == None:
+            raise Exception("Could not post world selection")
+        else:
+            self.__world_url = r.json()['redirect']
+            self.__cid = r.cookies['cid']
 
-    mid = getRedirLogin(new_phpsessid, xsrf, tid)
-    if mid == None:
-        print("Error getting mid from redirection logins")
-        return None
+    def login(self):
+        try:
+            self.__getTokens()
+            self.__getNewPHP()
+            self.__getRedirLogin()
+            self.__getWorldRedir()
+            self.__getSid()
+            self.__getJsonGateway()
+        except Exception as e:
+            raise e
 
-    (new_url, new_tid, cid) = getWorldRedir(mid)
-    if new_url == None:
-        print("Error getting world url and tokens")
-        return None
+    def logout(self):
+        cookie = 'ig_conv_last_site={};'.format(self.__selected_world_page) + \
+                 'sid={};'.format(self.__sid) + \
+                 'req_page_info=game_v1;' + \
+                 'start_page_type=game;' + \
+                 'start_page_version=v1'
+        r = self.__emitGET(self.__world_logout_page, cookie,
+                           self.__selected_world_page)
+        if r == None:
+            raise Exception("Could not get world logout page")
+            return
 
-    sid = getSid(new_url)
-    if sid == None:
-        print("Error getting 'sid'")
-        return None
+        cookie = '_mid={};'.format(self.__mid) + \
+                 'ig_conv_last_site={};'.format(self.__selected_world_page) + \
+                 'portal_tid={};'.format(self.__tid2) + \
+                 'portal_ref_url={};'.format(self.__home_page) + \
+                 'portal_ref_session=1;' + \
+                 'portal_data=portal_tid={}'.format(self.__tid2) + \
+                            '&portal_ref_url={}'.format(self.__home_page) + \
+                            '&portal_ref_session=1;' + \
+                 'cid={}'.format(self.__cid)
+        r = self.__emitGET(self.__world_selection_page, cookie,
+                           self.__selected_world_page)
+        if r == None:
+            raise Exception("Could not get world selection page on way out")
+            return
 
-    gateway = getJsonGateway(sid)
-    if gateway == None:
-        print("Error getting json gateway")
-    login_data = {
-        'PHPSESSID': phpsessid,
-        'XSRF-TOKEN': xsrf,
-        'PHPSESSID2': new_phpsessid,
-        'tid': tid,
-        'player_id': player_id,
-        'mid': mid,
-        'tid2': new_tid,
-        'cid': cid,
-        'sid': sid,
-        'json_gateway': gateway,
-        'json_id': gateway[36:]
-    }
-    return login_data
+        cookie = '_mid={};'.format(self.__mid) + \
+                 'ig_conv_last_site={};'.format(self.__world_selection_page) + \
+                 'portal_tid={};'.format(self.__tid2) + \
+                 'portal_ref_url={};'.format(self.__selected_world_page) + \
+                 'portal_ref_session=1;' + \
+                 'portal_data=portal_tid={}'.format(self.__tid2) + \
+                            '&portal_ref_url={}'.format(self.__selected_world_page) + \
+                            '&portal_ref_session=1;' + \
+                 'cid={}'.format(self.__cid)
+        r = self.__emitGET(self.__world_selection_logout_page, cookie,
+                           self.__world_selection_page)
+        if r == None:
+            raise Exception("Could not get world selection logout page")
+            return
 
-def logout(cred):
-    sid = cred['sid']
-    mid = cred['mid']
-    tid2 = cred['tid2']
-    cid = cred['cid']
-    phpsessid2 = cred['PHPSESSID2']
-    xsrf = cred['XSRF-TOKEN']
-    tid = cred['tid']
-    h = header.copy()
-    h['Accept'] = accept[0]
-    h['Cookie'] = 'ig_conv_last_site=' + url[4] + ';' + \
-                  'sid=' + sid + ';' + \
-                  'req_page_info=game_v1;' + \
-                  'start_page_type=game;' + \
-                  'start_page_version=v1'
-    h['Host'] = host[2]
-    h['Referer'] = url[4]
-    r = requests.get(url[5], headers = h, allow_redirects = False)
-    if r.status_code != requests.codes.found:
-        print(r.status_code, r.reason)
-        print('GET', url[5])
-        pprint(h)
-        pprint(r.headers)
-        return 1
+        cookie = 'PHPSESSID={};'.format(self.__phpsessid2) + \
+                 'device_view=full;' + \
+                 'portal_tid={};'.format(self.__tid) + \
+                 'portal_data=portal_tid={};'.format(self.__tid) + \
+                 'ig_conv_last_site={}'.format(self.__world_selection_page)
+        r = self.__emitGET(self.__home_logout_page, cookie,
+                           self.__world_selection_page)
+        if r == None:
+            raise Exception("Could not get home logout page")
+            return
 
-    h['Cookie'] = '_mid=' + mid + ';' + \
-                  'ig_conv_last_site=' + url[4] + ';' + \
-                  'portal_tid=' + tid2 + ';' + \
-                  'portal_ref_url=' + url[0] + ';' + \
-                  'portal_ref_session=1;' + \
-                  'portal_data=portal_tid=' + tid2 + \
-                             '&portal_ref_url=' + url[0] + ';' + \
-                             '&portal_ref_session=1;' + \
-                  'cid=' + cid
-    h['Host'] = host[1]
-    r = requests.get(url[2], headers = h)
-    if r.status_code != requests.codes.ok:
-        print(r.status_code, r.reason)
-        print('GET', url[2])
-        pprint(h)
-        pprint(r.headers)
-        return 1
+        cookie = 'PHPSESSID={};'.format(r.cookies['PHPSESSID']) + \
+                 'XSRF-TOKEN={};'.format(r.cookies['XSRF-TOKEN']) + \
+                 'device_view=full;' + \
+                 'portal_tid={};'.format(self.__tid) + \
+                 'portal_data=portal_tid={};'.format(self.__tid) + \
+                 'ig_conv_last_site={}'.format(self.__world_selection_page)
+        r = self.__emitGET(self.__home_page, cookie,
+                           self.__world_selection_page)
+        if r == None:
+            raise Exception("Could not get home page on way out")
 
-    h['Cookie'] = '_mid=' + mid + ';' + \
-                  'ig_conv_last_site=' + url[2] + ';' + \
-                  'portal_tid=' + tid2 + ';' + \
-                  'portal_ref_url=' + url[4] + ';' + \
-                  'portal_ref_session=1;' + \
-                  'portal_data=portal_tid=' + tid2 + \
-                             '&portal_ref_url=' + url[4] + ';' + \
-                             '&portal_ref_session=1;' + \
-                  'cid=' + cid
-    h['Referer'] = url[2]
-    r = requests.get(url[6], headers = h, allow_redirects = False)
-    if r.status_code != requests.codes.found:
-        print(r.status_code, r.reason)
-        print('GET', url[6])
-        pprint(h)
-        pprint(r.headers)
-        return 1
+    def __forgeRequest(self, request):
+        get_key = 'MAW#YB*y06wqz$kTOE'
+        req_str = json.dumps(request).replace(' ', '')
+        concat = self.__json_id + get_key + req_str
+        return md5(concat.encode('utf-8')).hexdigest()[:10] + req_str
 
-    h['Cookie'] = 'PHPSESSID=' + phpsessid2 + ';' + \
-                  'device_view=full;' + \
-                  'portal_tid=' + tid + ';' + \
-                  'portal_data=portal_tid=' + tid + ';' + \
-                  'ig_conv_last_site=' + url[2]
-    h['Host'] = host[0]
-    r = requests.get(url[7], headers = h, allow_redirects = False)
-    if r.status_code != requests.codes.found:
-        print(r.status_code, r.reason)
-        print('GET', url[6])
-        pprint(h)
-        pprint(r.headers)
-        return 1
-
-    h['Cookie'] = 'PHPSESSID=' + r.cookies['PHPSESSID'] + ';' + \
-                  'XSRF-TOKEN=' + r.cookies['XSRF-TOKEN'] + ';' + \
-                  'device_view=full;' + \
-                  'portal_tid=' + tid + ';' + \
-                  'portal_data=portal_tid=' + tid + ';' + \
-                  'ig_conv_last_site=' + url[2]
-    r = requests.get(url[0], headers = h)
-    if r.status_code != requests.codes.ok:
-        print(r.status_code, r.reason)
-        print('GET', url[0])
-        pprint(h)
-        pprint(r.headers)
-        return 1
-    return 0
+    def request(self, rq):
+        payload = self.__forgeRequest(rq)
+        h = self.__headers.copy()
+        h['Accept'] = '*/*'
+        h['Content-Length'] = str(len(payload))
+        h['Content-Type'] = 'application/json'
+        h['Cookie'] = 'ig_conv_last_site={};'.format(self.__selected_world_page) + \
+                      'sid={};'.format(self.__sid) + \
+                      'req_page_info=game_v1;' + \
+                      'start_page_type=game;' + \
+                      'start_page_version=v1'
+        h['Host'] = self.__selected_world_page.split('/')[2]
+        h['Os-type'] = 'browser'
+        h['Referer'] = self.__selected_world_page
+        h['X-Requested-With'] = 'ElvenarHaxeClient'
+        r = requests.post(self.__json_gateway, headers = h, data = payload)
+        if r.status_code != requests.codes.ok:
+            print(r.status_code, r.reason)
+            print('POST', self.__json_gateway)
+            pprint(h)
+            pprint(r.headers)
+            return None
+        return r.content
