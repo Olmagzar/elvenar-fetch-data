@@ -19,17 +19,18 @@ class ElvenarConnection():
         'Harandar'
     ]
     def __init__(self, login, passwd, country, world):
-        if country == 'beta':
-            country = 'zz'
+        self.__home_page = 'https://{}.elvenar.com/'.format(country)
         if world in self.__worlds:
             self.__world_id = '{}{}'.format(country, self.__worlds.index(world) + 1)
+        elif country == 'beta':
+            country = 'zz'
+            world = 'zz1'
         else:
             raise Exception("World {} not found in the list".format(world))
 
         self.__login_check_params = 'login%5Buserid%5D={}&'.format(login) + \
                                     'login%5Bpassword%5D={}&'.format(passwd) + \
                                     'login%5Bremember_me%5D=false'
-        self.__home_page = 'https://{}.elvenar.com/'.format(country)
         self.__login_page = '{}glps/login_check'.format(self.__home_page)
         self.__world_selection_page = 'https://{}0.elvenar.com/web/glps'.format(country)
         self.__ask_world_page = 'https://{}0.elvenar.com/web/login/play'.format(country)
@@ -45,7 +46,7 @@ class ElvenarConnection():
             'Accept-Language': 'en-US,en,q=0.5',
             'Connection': 'keep-alive',
             'Host': '',
-            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:68.0) Gecko/20100101 Goanna/4.8 Firefox 68.0 PaleMoon/29.4.1'
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:68.0) Gecko/20100101 Goanna/4.8 Firefox 68.0 PaleMoon/29.4.2.1'
         }
 
     def __getPlayerID(self):
@@ -116,12 +117,10 @@ class ElvenarConnection():
         r = self.__emitGET(self.__home_page, cookie, self.__home_page)
         if r == None:
             raise Exception("Could not get logged in page")
-            return
         url = r.headers['location']
         r = self.__emitGET(url, referer = self.__home_page)
         if r == None:
             raise Exception("Could note get credential page")
-            return
         self.__mid = r.cookies['_mid']
         cookie = '_mid={}'.format(self.__mid)
         r = self.__emitGET(self.__world_selection_page, cookie, self.__home_page)
@@ -203,8 +202,8 @@ class ElvenarConnection():
             self.__getWorldRedir()
             self.__getSid()
             self.__getJsonGateway()
-        except Exception as e:
-            raise e
+        except:
+            raise
 
     def logout(self):
         cookie = 'ig_conv_last_site={};'.format(self.__selected_world_page) + \
@@ -216,7 +215,6 @@ class ElvenarConnection():
                            self.__selected_world_page)
         if r == None:
             raise Exception("Could not get world logout page")
-            return
 
         cookie = '_mid={};'.format(self.__mid) + \
                  'ig_conv_last_site={};'.format(self.__selected_world_page) + \
@@ -231,7 +229,6 @@ class ElvenarConnection():
                            self.__selected_world_page)
         if r == None:
             raise Exception("Could not get world selection page on way out")
-            return
 
         cookie = '_mid={};'.format(self.__mid) + \
                  'ig_conv_last_site={};'.format(self.__world_selection_page) + \
@@ -246,7 +243,6 @@ class ElvenarConnection():
                            self.__world_selection_page)
         if r == None:
             raise Exception("Could not get world selection logout page")
-            return
 
         cookie = 'PHPSESSID={};'.format(self.__phpsessid2) + \
                  'device_view=full;' + \
@@ -257,7 +253,6 @@ class ElvenarConnection():
                            self.__world_selection_page)
         if r == None:
             raise Exception("Could not get home logout page")
-            return
 
         cookie = 'PHPSESSID={};'.format(r.cookies['PHPSESSID']) + \
                  'XSRF-TOKEN={};'.format(r.cookies['XSRF-TOKEN']) + \
