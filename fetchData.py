@@ -1,140 +1,24 @@
 from pprint import pprint
 from connection import ElvenarConnection
+from processData import processResp
 import os
 import stat
 import json
 import time
 import argparse
 import sys
-from hashlib import md5
 
 UP = "\x1b[3A"
 CLR = "\x1b[0K"
 GOOD = "\033[38;5;34m"
 BAD = "\033[38;5;1m"
 RES = "\033[0m"
-ghosts = [0 for i in range(20)]
-
-def getName(players, player_id):
-    return [ p['player']['player_name'] for p in players \
-                 if p['player']['player_id'] == player_id ][0]
-
-def processResp(data, me, rqIds, players, player_list, tguilds):
-    if data['requestClass'] == 'ExceptionService':
-        fd = os.open('errors.txt', os.O_CREAT|os.O_APPEND|os.O_WRONLY)
-        os.chmod(fd, stat.S_IRUSR|stat.S_IWUSR|stat.S_IRGRP|stat.S_IROTH)
-        os.write(fd, json.dumps(data).encode())
-        os.write(fd, b'\n')
-        os.close(fd)
-        return
-    elif data['requestClass'] == 'OtherPlayerService' and \
-         data['requestMethod'] == 'visitPlayer':
-        player = data['responseData']
-        if 'technologySection' in player:
-            tech = player['technologySection']
-        else:
-            player_id = str(rqIds[data['requestId']])
-            player_name = getName(players, player_id)
-            fd = os.open('errors.txt', os.O_CREAT|os.O_APPEND|os.O_WRONLY)
-            os.chmod(fd, stat.S_IRUSR|stat.S_IWUSR|stat.S_IRGRP|stat.S_IROTH)
-            os.write(fd, ('WARNING: player ' + player_name + \
-                          ' (' + player_id + ') has no tech.\n').encode())
-            os.close(fd)
-            tech = 0
-
-        city = player['city_map']['entities']
-        city_hash = md5(json.dumps(city).encode()).hexdigest()
-        # Coeur de la montagne : B_Dwarfs_AW2_X -> goods bonus
-        # Centre d'échange     : B_Gr6_AW2_X    -> manuf spell pickup bonus
-        # Voyage temporel      : B_Gr9_AW1_X    -> sensible goods bonus
-        # Vortex de stockage   : B_Gr10_AW1_X   -> sensible goods bonus
-        # Arbre d'illumination : B_****_AW?_X   -> ascendant goods bonus
-        buildings = { b['id']: (b['cityentity_id'], b['level'], 'connected' in b) for b in city \
-                        if b['type'] == 'goods' \
-                        or 'B_Dwarfs_AW2_' in b['cityentity_id'] \
-                        or 'B_Gr6_AW2_' in b['cityentity_id'] \
-                        or 'B_Gr9_AW1_' in b['cityentity_id'] \
-                        or 'B_Gr10_AW1_' in b['cityentity_id'] }
-
-        # Effects:
-        # - 'good_production_boost_spell'    (manuf enchantée, ownerId, remainingTime)
-        # - 'manufactories_production_boost' (phénix doré, remainingTime)
-        # - 'increase_spell_power_boost'     (phénix des tempêtes, remainingTime)
-        effects = {}
-        if 'effects' in player:
-            for e in player['effects']:
-                if e['actionId'] in ('good_production_boost_spell', \
-                                     'manufactories_production_boost', \
-                                     'increase_spell_power_boost') \
-                   and 'remainingTime' in e:
-                    effects[e['ownerId']] = (e['actionId'], e['remainingTime'])
-
-        player = player['other_player']
-        player_id = str(player['player_id'])
-        if not 'r' in player['location']:
-            player['location']['r'] = 0
-        if not 'q' in player['location']:
-            player['location']['q'] = 0
-        if player['location']['r'] == me['r'] \
-           and player['location']['q'] == me['q'] \
-           and player_id != str(me['player_id']):
-            player_list[player_id]['ghost'] = True
-            player_list[player_id]['active_period'] = 0
-            player_list[player_id]['active'] = False
-            ghosts[tech] += 1
-        else:
-            player_list[player_id]['ghost'] = False
-
-        if ('city_hash' in player_list[player_id] and \
-            player_list[player_id]['city_hash'] != city_hash) \
-           or effects != {}:
-            player_list[player_id]['active'] = True
-            if player_list[player_id]['ghost'] == True:
-                print('mark ghost active', effects != {})
-
-        player_list[player_id]['name'] = player['name']
-        player_list[player_id]['x'] = player['location']['r']
-        player_list[player_id]['y'] = player['location']['q']
-        player_list[player_id]['encounter'] = 0
-        player_list[player_id]['tech'] = tech
-        player_list[player_id]['city_hash'] = city_hash
-        player_list[player_id]['buildings'] = buildings
-        player_list[player_id]['effects'] = effects
-
-        if 'guild_info' in player:
-            player_list[player_id]['guild_id'] = player['guild_info']['id']
-            player_list[player_id]['guild_name'] = player['guild_info']['name']
-            if player['guild_info']['id'] in tguilds:
-                player_list[player_id]['active_guild'] = True
-        else:
-            if 'guild_id' in player_list[player_id]:
-                trash = player_list[player_id].pop('guild_id')
-                trash = player_list[player_id].pop('guild_name')
-            trash = player_list[player_id].pop('active_guild')
-    elif data['requestClass'] == 'RankingService' and \
-         data['requestMethod'] == 'getRankingOverview':
-        player_id = str(rqIds[data['requestId']])
-        score_hash = md5(json.dumps(data['responseData']).encode()).hexdigest()
-        if 'score_hash' in player_list[player_id] and \
-           player_list[player_id]['score_hash'] != score_hash:
-            player_list[player_id]['active'] = True
-            if player_list[player_id]['ghost'] == True:
-                print('(2) mark ghost active')
-        player_list[player_id]['score_hash'] = score_hash
-        for elt in data['responseData']:
-            if elt['category'] != 'encounters':
-                continue
-            player_list[player_id]['encounter'] = elt['score']
-    else:
-        fd = os.open('errors.txt', os.O_CREAT|os.O_APPEND|os.O_WRONLY)
-        os.chmod(fd, stat.S_IRUSR|stat.S_IWUSR|stat.S_IRGRP|stat.S_IROTH)
-        os.write(fd, json.dumps(data).encode())
-        os.write(fd, b'\n')
-        os.close(fd)
 
 # TODO: check Exceptions, it might need to be reworked!
 class GameCartographer():
     def __init__(self, username, passwd, country, world, prefix_path):
+        self.__ghosts = [0 for i in range(20)]
+        self.__err = []
         self.__reqId = 1
         self.__logged_in = False
         self.__country = country.lower()
@@ -243,7 +127,6 @@ class GameCartographer():
     def __initMemory(self):
         print('[....] Initialize memory')
         self.__id_list = []
-        self.__mark_score = 0
         self.__mark_new = 0
         for p in self.__players:
             if not 'points' in p:
@@ -251,15 +134,9 @@ class GameCartographer():
             player_id = str(p['player']['player_id'])
             self.__id_list += [player_id]
             if player_id in self.__player_list:
-                if self.__player_list[player_id]['points'] != p['points']:
-                    self.__player_list[player_id]['active'] = True
-                    self.__player_list[player_id]['active_guild'] = True
-                    self.__mark_score += 1
-                else:
-                    self.__player_list[player_id]['active'] = False
-                    self.__player_list[player_id]['active_guild'] = False
+                self.__player_list[player_id]['active'] = False
             else:
-                self.__player_list[player_id] = { 'active': True, 'active_guild': True, 'tournament': 0 }
+                self.__player_list[player_id] = { 'active': True, 'tournament': 0 }
                 self.__mark_new += 1
             self.__player_list[player_id]['points'] = p['points']
         print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
@@ -272,7 +149,6 @@ class GameCartographer():
             print(f"\n\n{UP}[{BAD}FAIL{RES}]")
             raise Exception("Could not access tournament ranking list")
         data = json.loads(data.decode())[0]
-        self.__tguilds = []
         self.__mark_t = 0
         if data['requestClass'] == 'ExceptionService':
             print(f"\n\n{UP}[{BAD}FAIL{RES}]")
@@ -285,10 +161,7 @@ class GameCartographer():
                 if self.__player_list[player_id]['tournament'] != p['points']:
                     self.__player_list[player_id]['active'] = True
                     self.__mark_t += 1
-                self.__player_list[player_id]['active_guild'] = True
                 self.__player_list[player_id]['tournament'] = p['points']
-                if 'guildInfo' in p:
-                    self.__tguilds += [p['guildInfo']['id']]
             print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
 
         if time.gmtime().tm_wday == 0:
@@ -296,13 +169,10 @@ class GameCartographer():
                 self.__player_list[player_id]['tournament'] = 0
 
     def initializePlayerList(self):
-        try:
-            self.__getPlayerList()
-            self.__loadLocalDB()
-            self.__initMemory()
-            self.__markTournamentPlayers()
-        except:
-            raise
+        self.__getPlayerList()
+        self.__loadLocalDB()
+        self.__initMemory()
+        self.__markTournamentPlayers()
 
     def visitPlayers(self):
         print('[....] Download players')
@@ -331,8 +201,8 @@ class GameCartographer():
                 data = json.loads(data.decode())
 
                 for idx in range(len(data)):
-                    processResp(data[idx], self.__me, rqIds, self.__players,
-                                self.__player_list, self.__tguilds)
+                    processResp(data[idx], self.__me, rqIds, self.__player_list,
+                                self.__ghosts, self.__err)
                 request_list = []
                 rqIds = {}
 
@@ -340,32 +210,6 @@ class GameCartographer():
             print(f"{UP}[{BAD}FAIL{RES}]\n")
         else:
             print(f"\n{UP}[ {GOOD}OK{RES} ]\n{CLR}", end='')
-
-    def __updateGuilds(self, method, service, args):
-        print("[....] Mark {} guilds active".format(args[0]))
-        rq = self.__createRequest(method, service, args)
-        data = self.__game.request(rq)
-        if data == None:
-            print(f"\n\n{UP}[{BAD}FAIL{RES}]")
-            raise Exception("Could not access {}".format(args[0]))
-        data = json.loads(data.decode())[0]['responseData']
-        if data['__class__'] == 'GameExceptionVO':
-            print(f"\n\n{UP}[{BAD}FAIL{RES}]")
-            raise Exception("Could not get {}".format(args[0]))
-        else:
-            guilds = data['rankings']
-            guild_ids = [ g['guildInfo']['id'] for g in guilds ]
-            for p_id in self.__player_list:
-                p = self.__player_list[p_id]
-                if 'guild_id' in p and p['guild_id'] in guild_ids:
-                    p['active_guild'] = True
-            print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
-
-    def updateGuildsInfo(self):
-        self.__updateGuilds('accessRanking', 'RankingService',
-                           ['previous_spire',999999,0])
-        self.__updateGuilds('accessRanking', 'RankingService',
-                           ['guild_event',999999,0])
 
     def __removePlayers(self):
         if os.path.exists(self.__db_file):
@@ -422,17 +266,18 @@ class GameCartographer():
         fn = '{}/{}_report-{}.txt'.format(prefix_path, self.__world, ts)
         fd = os.open(fn, os.O_CREAT|os.O_WRONLY)
         os.write(fd, 'Over {} cities:\n'.format(len(self.__player_list)).encode())
-        os.write(fd, '    {} were put in storage,\n'.format(sum(ghosts)).encode())
+        os.write(fd, '    {} were put in storage,\n'.format(sum(self.__ghosts)).encode())
         os.write(fd, '    {} were new players,\n'.format(self.__mark_new).encode())
-        os.write(fd, '    {} changed score,\n'.format(self.__mark_score).encode())
 #        os.write(fd, '    {} changed their city,\n'.format(self.__mark_city).encode())
 #        os.write(fd, '    {} changed had an active effect,\n'.format(self.__mark_effect).encode())
         os.write(fd, '    {} actively participated in tournament,\n'.format(self.__mark_t).encode())
-        os.write(fd, json.dumps(ghosts[1:]).encode())
+        os.write(fd, json.dumps(self.__ghosts[1:]).encode())
         os.write(fd, b'\n')
         os.close(fd)
         os.chmod(fn, stat.S_IRUSR|stat.S_IWUSR|stat.S_IRGRP|stat.S_IROTH)
         print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
+        for e in self.__err:
+            print(e)
 
 def main(username, passwd, country, world, prefix_path):
     try:
@@ -440,7 +285,6 @@ def main(username, passwd, country, world, prefix_path):
                                       prefix_path)
         cartograph.initializePlayerList()
         cartograph.visitPlayers()
-        cartograph.updateGuildsInfo()
         cartograph.finalizePlayerList()
         cartograph.summarizeJourney()
     except KeyboardInterrupt:
