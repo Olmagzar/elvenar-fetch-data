@@ -1,6 +1,9 @@
 import json
 from hashlib import md5
 
+# TODO:
+#   * collect all goods production
+#   * take a look at effects to be more precise about activity (stacked p.o.p.?)
 def analyseCity(player):
     city = player['city_map']['entities']
     # Coeur de la montagne : B_Dwarfs_AW2_X -> goods bonus

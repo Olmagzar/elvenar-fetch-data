@@ -158,10 +158,15 @@ class GameCartographer():
             tplayers = data['responseData']['rankings']
             for p in tplayers:
                 player_id = str(p['player']['player_id'])
-                if self.__player_list[player_id]['tournament'] != p['points']:
-                    self.__player_list[player_id]['active'] = True
-                    self.__mark_t += 1
-                self.__player_list[player_id]['tournament'] = p['points']
+                try:
+                    if self.__player_list[player_id]['tournament'] != p['points']:
+                        self.__player_list[player_id]['active'] = True
+                        self.__mark_t += 1
+                    self.__player_list[player_id]['tournament'] = p['points']
+                except KeyError:
+                    self.__err.append(p)
+                except:
+                    raise
             print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
 
         if time.gmtime().tm_wday == 0:
