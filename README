@@ -2,8 +2,10 @@ This is a python script to fetch data from the game to be able to analyse it.
 The json file generated is parsable by the elvenar-world-map project as it was
 the main goal.
 
-usage: fetchData.py [-h] [--prefix-path PREFIX_PATH] username passwd
-                                                     country world
+usage: fetchData.py [-h] [--prefix-path PREFIX_PATH]
+                    [--guild-name GUILD_NAME]
+                    [--player-guild PLAYER_GUILD]
+                    username passwd country world
 
 Generate json database from web requests.
 
@@ -17,6 +19,8 @@ optional arguments:
   -h, --help                    show this help message and exit
   --prefix-path PREFIX_PATH     Path to load and store database from
                                 (<prefix-path>/<country>/<world>/players.json)
+  --guild-name GUILD_NAME       Fetch cities from the specified guild
+  --player-guild PLAYER_GUILD   Fetch cities from the guild of the specified player
 
 The script also creates a report file in a local 'reports/<country>' directory,
 name <World>_report-<timestamp-utc>.txt
