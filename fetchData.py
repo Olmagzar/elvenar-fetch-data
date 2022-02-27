@@ -16,7 +16,7 @@ RES = "\033[0m"
 
 # TODO: check Exceptions, it might need to be reworked!
 class GameCartographer():
-    def __init__(self, username, passwd, country, world, prefix_path):
+    def __init__(self, username, passwd, country, world, prefix_path, guild_name, player_guild):
         self.__ghosts = [0 for i in range(20)]
         self.__err = []
         self.__reqId = 1
@@ -26,6 +26,8 @@ class GameCartographer():
         self.__game = ElvenarConnection(username, passwd, country, world)
         prefix_path = '{}/{}/{}'.format(prefix_path, country.lower(), world.lower())
         self.__db_file = '{}/players.json'.format(prefix_path)
+        self.__guild_name = guild_name
+        self.__player_guild = player_guild
         try:
             if not os.path.isdir(prefix_path):
                 os.makedirs(prefix_path)
@@ -96,20 +98,71 @@ class GameCartographer():
             print(f"\n\n{UP}[{BAD}FAIL{RES}]")
             raise Exception("Could not retrieve cartographer details")
 
+    def __getGuildID(self):
+        guild_id = -1
+        if self.__guild_name != None:
+            rq = self.__createRequest('getRankingList', 'RankingService',
+                                      ['guild',0,999999,self.__guild_name,'name'])
+            data = self.__game.request(rq)
+            if data == None:
+                raise Exception("Could not access guild search")
+            data = json.loads(data.decode())[0]
+            if data['requestClass'] == 'ExceptionService' or \
+               'rankings' not in data['responseData']:
+                pprint(data)
+                raise Exception("Could not retrieve guild search result")
+            for g in data['responseData']['rankings']:
+                if g['guild_info']['name'].lower() == self.__guild_name.lower():
+                    guild_id = g['guild_info']['id']
+                    break
+            if guild_id == -1:
+                raise Exception("Guild named '{}' not found".format(
+                        self.__guild_name))
+        elif self.__player_guild != None:
+            rq = self.__createRequest('getRankingList', 'RankingService',
+                                      ['player',0,999999,self.__player_guild,'name'])
+            data = self.__game.request(rq)
+            if data == None:
+                raise Exception("Could not access player search")
+            data = json.loads(data.decode())[0]
+            if data['requestClass'] == 'ExceptionService' or \
+               'rankings' not in data['responseData']:
+                pprint(data)
+                raise Exception("Could not retrieve player search result")
+            for p in data['responseData']['rankings']:
+                if p['player']['name'].lower() == self.__player_guild.lower() \
+                   and 'guildInfo' in p:
+                    guild_id = p['guildInfo']['id']
+                    break
+            if guild_id == -1:
+                raise Exception(
+                        "Guild named '{}' not found or not in a guild".format(
+                        self.__player_guild))
+        else:
+            raise Exception("Could not retrieve guild id (unspecified data)")
+        return guild_id
+
     def __getPlayerList(self):
         print("[....] Get list of players")
-        rq = self.__createRequest('accessRanking', 'RankingService',
-                                  ['player',999999,0])
+        if self.__guild_name == None and self.__player_guild == None:
+            rq = self.__createRequest('accessRanking', 'RankingService',
+                                      ['player',999999,0])
+        else:
+            guild_id = self.__getGuildID()
+            rq = self.__createRequest('getGuild', 'GuildService', [guild_id])
         data = self.__game.request(rq)
         if data == None:
             print(f"\n\n{UP}[{BAD}FAIL{RES}]")
-            raise Exception("Could not access player ranking")
+            raise Exception("Could not access player list")
         data = json.loads(data.decode())[0]
         if data['requestClass'] == 'ExceptionService':
             print(f"\n\n{UP}[{BAD}FAIL{RES}]")
             pprint(data)
             raise Exception("Could not retrieve player list")
-        self.__players = data['responseData']['rankings']
+        if self.__guild_name == None and self.__player_guild == None:
+            self.__players = data['responseData']['rankings']
+        else:
+            self.__players = data['responseData']['members']
         print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
 
     def __loadLocalDB(self):
@@ -129,7 +182,9 @@ class GameCartographer():
         self.__id_list = []
         self.__mark_new = 0
         for p in self.__players:
-            if not 'points' in p:
+            if 'score' in p:
+                p['points'] = p['score']
+            elif not 'points' in p:
                 p['points'] = 0
             player_id = str(p['player']['player_id'])
             self.__id_list += [player_id]
@@ -159,10 +214,12 @@ class GameCartographer():
             for p in tplayers:
                 player_id = str(p['player']['player_id'])
                 try:
-                    if self.__player_list[player_id]['tournament'] != p['points']:
-                        self.__player_list[player_id]['active'] = True
-                        self.__mark_t += 1
-                    self.__player_list[player_id]['tournament'] = p['points']
+                    if player_id in self.__player_list and \
+                       (self.__guild_name != None or self.__player_guild != None):
+                        if self.__player_list[player_id]['tournament'] != p['points']:
+                            self.__player_list[player_id]['active'] = True
+                            self.__mark_t += 1
+                        self.__player_list[player_id]['tournament'] = p['points']
                 except KeyError:
                     self.__err.append(p)
                 except:
@@ -284,10 +341,10 @@ class GameCartographer():
         for e in self.__err:
             print(e)
 
-def main(username, passwd, country, world, prefix_path):
+def main(username, passwd, country, world, prefix_path, guild_name, player_guild):
     try:
         cartograph = GameCartographer(username, passwd, country, world,
-                                      prefix_path)
+                                      prefix_path, guild_name, player_guild)
         cartograph.initializePlayerList()
         cartograph.visitPlayers()
         cartograph.finalizePlayerList()
@@ -304,10 +361,16 @@ if __name__ == '__main__':
     parser.add_argument('--prefix-path', type=str, default='/mnt/elvenar-db/src',
                         help='Path to load and store database from ' + \
                              '(<prefix-path>/<country>/<world>/players.json)')
+    parser.add_argument('--guild-name', type=str,
+                        help='Fetch cities from the specified guild')
+    parser.add_argument('--player-guild', type=str,
+                        help='Fetch cities from the guild of the specified player')
     args = parser.parse_args(sys.argv[1:])
     username = vars(args)['username']
     passwd = vars(args)['passwd']
     country = vars(args)['country']
     world = vars(args)['world']
     prefix_path = vars(args)['prefix_path']
-    main(username, passwd, country, world, prefix_path)
+    guild_name = vars(args)['guild_name']
+    player_guild = vars(args)['player_guild']
+    main(username, passwd, country, world, prefix_path, guild_name, player_guild)
