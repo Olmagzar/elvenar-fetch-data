@@ -268,7 +268,7 @@ class ElvenarConnection():
 
     def __forgeRequest(self, request):
         get_key = 'MAW#YB*y06wqz$kTOE'
-        req_str = json.dumps(request).replace(' ', '')
+        req_str = json.dumps(request, separators=(',',':'))
         concat = self.__json_id + get_key + req_str
         return md5(concat.encode('utf-8')).hexdigest()[:10] + req_str
 
