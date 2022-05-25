@@ -146,24 +146,75 @@ class GameCartographer():
         print("[....] Get list of players")
         if self.__guild_name == None and self.__player_guild == None:
             rq = self.__createRequest('accessRanking', 'RankingService',
-                                      ['player',999999,0])
+                                      ['player',8,0])
+            data = self.__game.request(rq)
+            if data == None:
+                print(f"\n\n{UP}[{BAD}FAIL{RES}]")
+                raise Exception("Could not access player list")
+            data = json.loads(data.decode())[0]
+            if data['requestClass'] == 'ExceptionService':
+                print(f"\n\n{UP}[{BAD}FAIL{RES}]")
+                pprint(data)
+                raise Exception("Could not retrieve player list")
+            list_size = data['responseData']['length']
+            max_size = 45000
+            if list_size > max_size:
+                parts = int(list_size/max_size)
+                rq = self.__createRequest('accessRanking', 'RankingService',
+                                          ['player',max_size,0])
+            else:
+                parts = 0
+                rq = self.__createRequest('accessRanking', 'RankingService',
+                                          ['player',list_size - 1,0])
+            self.__players = []
+            while (parts >= 0):
+                data = self.__game.request(rq)
+                if data == None:
+                    print(f"\n\n{UP}[{BAD}FAIL{RES}]")
+                    raise Exception("Could not access player list")
+                data = json.loads(data.decode())[0]
+                if data['requestClass'] == 'ExceptionService':
+                    print(f"\n\n{UP}[{BAD}FAIL{RES}]")
+                    pprint(data)
+                    raise Exception("Could not retrieve player list")
+                # Actually server returns "size"+1
+                # Use extra one as pivot id to get the next part of the list and
+                # remove the previous last so it doesn't appears twice.
+                #  (there might be an error someday if rankings changes between
+                #   two parts on the pivot id. That might result with
+                #   'KeyError no "active_period" in ...')
+                last_id = data['responseData']['rankings'][
+                            len(data['responseData']['rankings']) - 1]['player']['player_id']
+                if self.__players != []:
+                    _ = self.__players.pop()
+                self.__players += data['responseData']['rankings']
+                parts -= 1
+                # queue the remaining part
+                if parts >= 0:
+                    rq = self.__createRequest('accessRanking', 'RankingService',
+                                              ['player',max_size,last_id])
+            ranks = []
+            for p in self.__players:
+                ranks.append(p['rank'])
+            for i in range(1, list_size + 1):
+                if not i in ranks:
+                    self.__err.append('missing rank {}'.format(i))
         else:
             guild_id = self.__getGuildID()
             rq = self.__createRequest('getGuild', 'GuildService', [guild_id])
-        data = self.__game.request(rq)
-        if data == None:
-            print(f"\n\n{UP}[{BAD}FAIL{RES}]")
-            raise Exception("Could not access player list")
-        data = json.loads(data.decode())[0]
-        if data['requestClass'] == 'ExceptionService':
-            print(f"\n\n{UP}[{BAD}FAIL{RES}]")
-            pprint(data)
-            raise Exception("Could not retrieve player list")
-        if self.__guild_name == None and self.__player_guild == None:
-            self.__players = data['responseData']['rankings']
-        else:
+            data = self.__game.request(rq)
+            if data == None:
+                print(f"\n\n{UP}[{BAD}FAIL{RES}]")
+                raise Exception("Could not access player list")
+            data = json.loads(data.decode())[0]
+            if data['requestClass'] == 'ExceptionService':
+                print(f"\n\n{UP}[{BAD}FAIL{RES}]")
+                pprint(data)
+                raise Exception("Could not retrieve player list")
             self.__players = data['responseData']['members']
         print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
+        for e in self.__err:
+            print(e)
 
     def __loadLocalDB(self):
         if os.path.exists(self.__db_file):
@@ -187,6 +238,11 @@ class GameCartographer():
             elif not 'points' in p:
                 p['points'] = 0
             player_id = str(p['player']['player_id'])
+            if player_id in self.__id_list:
+                self.__err.append('"{}" had a duplicate, one other player might be lost'.format(
+                                    p['player']['name']))
+                self.__players.remove(p)
+                continue
             self.__id_list += [player_id]
             if player_id in self.__player_list:
                 self.__player_list[player_id]['active'] = False
@@ -195,9 +251,14 @@ class GameCartographer():
                 self.__mark_new += 1
             self.__player_list[player_id]['points'] = p['points']
         print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
+        for e in self.__err:
+            print(e)
 
     def __markTournamentPlayers(self):
         print("[....] Mark tournament players active")
+        # This part might need to use a loop as in __getPlayerList but it seems
+        # unlikely that there would be one day enougth tournament players to
+        # cause an error.
         rq = self.__createRequest('accessRanking', 'RankingService', ['tournament',999999,0])
         data = self.__game.request(rq)
         if data == None:
@@ -290,8 +351,15 @@ class GameCartographer():
             if active == True:
                 self.__player_list[player_id]['active_period'] = 35
             else:
-                period = self.__player_list[player_id]['active_period']
-                self.__player_list[player_id]['active_period'] = max(period - 1, 0)
+                try:
+                    period = self.__player_list[player_id]['active_period']
+                    self.__player_list[player_id]['active_period'] = max(period - 1, 0)
+                except KeyError as e:
+                    self.__err.append('KeyError: "{}" not found for "{}" ({})'.format(e,
+                                        self.__player_list[player_id]['name']),
+                                        player_id)
+                except:
+                    raise
         print(f"\n\n{UP}[ {GOOD}OK{RES} ]")
 
     def __writeLocalDB(self):
