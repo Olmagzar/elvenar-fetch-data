@@ -272,13 +272,17 @@ class GameCartographer():
             raise Exception("Could not get tournament list")
         else:
             tplayers = data['responseData']['rankings']
+            if self.__guild_name != None or self.__player_guild != None:
+                guild_id = self.__getGuildID()
             for p in tplayers:
                 player_id = str(p['player']['player_id'])
                 try:
                     if player_id in self.__player_list and \
-                       (self.__guild_name != None or self.__player_guild != None):
-                        if self.__player_list[player_id]['tournament'] != p['points']:
-                            self.__player_list[player_id]['active'] = True
+                        self.__player_list[player_id]['tournament'] != p['points']:
+                        self.__player_list[player_id]['active'] = True
+                        if self.__guild_name == None and self.__player_guild == None:
+                            self.__mark_t += 1
+                        elif 'guildInfo' in p and p['guildInfo']['id'] == guild_id:
                             self.__mark_t += 1
                         self.__player_list[player_id]['tournament'] = p['points']
                 except KeyError:
