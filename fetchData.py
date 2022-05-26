@@ -430,7 +430,7 @@ if __name__ == '__main__':
     parser.add_argument('passwd', type=str, help='Player password')
     parser.add_argument('country', type=str, help='Country server')
     parser.add_argument('world', type=str, help='World to fetch data from')
-    parser.add_argument('--prefix-path', type=str, default='/mnt/elvenar-db/src',
+    parser.add_argument('--prefix-path', type=str, default='./elvenar-db/src',
                         help='Path to load and store database from ' + \
                              '(<prefix-path>/<country>/<world>/players.json)')
     parser.add_argument('--guild-name', type=str,
